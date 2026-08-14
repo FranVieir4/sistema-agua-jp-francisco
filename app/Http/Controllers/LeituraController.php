@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreLeituraRequest;
 use App\Models\Consumidor;
 use App\Models\Leitura;
 use App\Models\Fatura;
 use App\Models\ConfiguracaoTaxa;
 use App\Services\FaturaCalculatorService;
-use Illuminate\Http\Request;
 
 class LeituraController extends Controller
 {
@@ -21,14 +21,9 @@ class LeituraController extends Controller
         return view('leituras.create', compact('consumidores'));
     }
 
-    public function store(Request $request)
+    public function store(StoreLeituraRequest $request)
     {
-        $data = $request->validate([
-            'consumidor_id' => 'required|exists:consumidores,id',
-            'mes_referencia' => 'required|integer|min:1|max:12',
-            'ano_referencia' => 'required|integer|min:2000',
-            'leitura_atual' => 'required|numeric|min:0',
-        ]);
+        $data = $request->validated();
 
         $jaExiste = Leitura::where('consumidor_id', $data['consumidor_id'])
             ->where('mes_referencia', $data['mes_referencia'])
@@ -39,35 +34,31 @@ class LeituraController extends Controller
             return back()->withErrors(['leitura' => 'Já existe leitura registrada para este consumidor neste mês/ano.'])->withInput();
         }
 
-        $ultimaLeitura = Leitura::where('consumidor_id', $data['consumidor_id'])
-            ->orderByDesc('ano_referencia')
-            ->orderByDesc('mes_referencia')
-            ->first();
+        $consumo = $data['leitura_atual'] - $data['leitura_anterior'];
 
-        $leituraAnterior = $ultimaLeitura ? $ultimaLeitura->leitura_atual : 0;
-
-        if ($data['leitura_atual'] < $leituraAnterior) {
-            return back()->withErrors(['leitura_atual' => 'A leitura atual não pode ser menor que a anterior (' . $leituraAnterior . ' m³).'])->withInput();
-        }
-
-        $consumo = $data['leitura_atual'] - $leituraAnterior;
-
-        $leitura = Leitura::create([
+        $leitura = Leitura::make([
             'consumidor_id' => $data['consumidor_id'],
             'mes_referencia' => $data['mes_referencia'],
             'ano_referencia' => $data['ano_referencia'],
-            'leitura_anterior' => $leituraAnterior,
+            'leitura_anterior' => $data['leitura_anterior'],
             'leitura_atual' => $data['leitura_atual'],
             'consumo_m3' => $consumo,
         ]);
+
+        if (! $leitura->leituraValida()) {
+            return back()
+                ->withErrors(['leitura_atual' => 'A leitura atual não pode ser menor que a anterior (' . number_format($data['leitura_anterior'], 2, ',', '.') . ' m³).'])
+                ->withInput();
+        }
+
+        $leitura->save();
 
         $config = ConfiguracaoTaxa::first() ?? ConfiguracaoTaxa::create(['taxa_fixa' => 25, 'valor_excedente' => 2]);
 
         $valorTotal = $this->calculator->calcular(
             $consumo,
             $config->taxa_fixa,
-            10.0,
-            $config->valor_excedente
+            $config->valor_excedente,
         );
 
         Fatura::create([
